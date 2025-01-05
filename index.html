@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+
+<title>Skapi Realtime Example</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/style-blank@latest/blank.css">
+<script src="https://cdn.jsdelivr.net/npm/skapi-js@latest/dist/skapi.js"></script>
+
+<script src="srvc.js"></script>
+
+<h1>Skapi Sandbox
+    <button id='el_bt_login' style='vertical-align: bottom;' onclick="gglLogin()">Google</button>
+    <button id='el_bt_logout' style='vertical-align: bottom;' onclick="skapi.logout(event); sessionStorage.removeItem('accessToken');" hidden>Logout</button>
+</h1>
+
+<br>
+
+<hr>
+
+<h1>Connection Info</h1>
+
+<pre id="pre_connectionInfo"></pre>
+
+<br>
+
+<hr>
+
+<h1>User Profile</h1>
+
+<pre id="el_pre_userProfile"></pre>
+
+<br>
+
+<h1>Unread Mails</h1>
+
+<div id="el_unread_mails"></div>
+
+<script>
+    skapi.getConnectionInfo().then(res => {
+        // Display the connection info
+        pre_connectionInfo.innerText = JSON.stringify(res, null, 2);
+    });
+
+    function gglLogin() {
+        let rnd = Math.random().toString(36).substring(2); // Generate a random string
+        sessionStorage.setItem('oauth_state', rnd); // Store the state value in session storage
+
+        let url = 'https://accounts.google.com/o/oauth2/v2/auth';
+        url += '?client_id=' + GOOGLE_CLIENT_ID;
+        url += '&redirect_uri=' + encodeURIComponent(REDIRECT_URL);
+        url += '&response_type=token';
+        url += '&scope=' + encodeURIComponent('https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/gmail.readonly');
+        url += '&prompt=select_account';
+        url += '&state=' + encodeURIComponent(rnd); // Include the state parameter
+
+        window.location.href = url;
+    }
+
+    async function handleOAuthCallback() {
+        const params = new URLSearchParams(window.location.hash.substring(1));
+        const state = params.get('state');
+        const storedState = sessionStorage.getItem('oauth_state');
+
+        if (state !== storedState) {
+            console.error('Invalid state parameter');
+            return;
+        }
+
+        // Handle the OAuth callback and extract the access token
+        const accessToken = params.get('access_token');
+        await verifyAccessToken(accessToken);
+
+        sessionStorage.setItem('accessToken', accessToken); // Store the state value in session storage
+
+        skapi.openIdLogin({ id: OPENID_LOGGER_ID, token: accessToken }).then(u => {
+            // Redirect to root path after successful login
+            window.location.href = '/';
+        });
+    }
+
+    async function verifyAccessToken(accessToken) {
+        try {
+            const response = await fetch(`https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=${accessToken}`);
+            const data = await response.json();
+            if (data.error) {
+                console.error('Token verification error:', data.error);
+                return false;
+            }
+            console.log('Token Info:', data);
+            return true;
+        } catch (error) {
+            console.error('Error verifying access token:', error);
+            return false;
+        }
+    }
+
+    async function fetchGmailEmails(accessToken) {
+        try {
+            const response = await fetch('https://www.googleapis.com/gmail/v1/users/me/messages?labelIds=UNREAD&maxResults=10', {
+                headers: {
+                    'Authorization': `Bearer ${accessToken}`
+                }
+            });
+            const data = await response.json();
+            const messages = data.messages || [];
+
+            for (const message of messages) {
+                const messageDetails = await fetchMessageDetails(accessToken, message.id, message.threadId);
+                console.log('Email Subject:', messageDetails.subject);
+                console.log('Email Link:', messageDetails.link);
+                let el = document.createElement('a');
+                let br = document.createElement('br');
+                el.innerText = messageDetails.subject;
+                el.href = messageDetails.link;
+                el.target = '_blank';
+                el_unread_mails.appendChild(el);
+                el_unread_mails.appendChild(br);
+            }
+        } catch (error) {
+            skapi.logout();
+            console.error('Error fetching Gmail emails:', error);
+        }
+    }
+
+    async function fetchMessageDetails(accessToken, messageId, threadId) {
+        try {
+            const response = await fetch(`https://www.googleapis.com/gmail/v1/users/me/messages/${messageId}`, {
+                headers: {
+                    'Authorization': `Bearer ${accessToken}`
+                }
+            });
+            const data = await response.json();
+            console.log({ email: data })
+            const headers = data.payload.headers;
+            const subjectHeader = headers.find(header => header.name === 'Subject');
+            const link = `https://mail.google.com/mail/u/0/#inbox/${threadId}`;
+            return {
+                subject: subjectHeader ? subjectHeader.value : 'No Subject',
+                link: link
+            };
+        } catch (error) {
+            console.error('Error fetching message details:', error);
+            return { subject: 'Error fetching subject', link: '#' };
+        }
+    }
+
+    // Call handleOAuthCallback on page load if there is a hash fragment
+    if (window.location.hash) {
+        handleOAuthCallback();
+    }
+    else {
+        let accessToken = sessionStorage.getItem('accessToken');
+
+        if (accessToken) {
+            // Fetch Gmail emails
+            fetchGmailEmails(accessToken);
+        }
+    }
+</script>
